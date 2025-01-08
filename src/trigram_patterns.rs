@@ -97,10 +97,7 @@ impl Finger {
     }
 
     const fn is_bad(&self) -> bool {
-        match self {
-            LP | LR | LM | RM | RR | RP => true,
-            _ => false,
-        }
+        matches!(self, LP | LR | LM | RM | RR | RP)
     }
 
     pub const fn from_usize(value: usize) -> Self {
@@ -149,6 +146,7 @@ impl Trigram {
     }
 
     const fn is_alt(&self) -> bool {
+        #[allow(clippy::match_like_matches_macro)]
         match (self.h1, self.h2, self.h3) {
             (Left, Right, Left) => true,
             (Right, Left, Right) => true,
@@ -170,6 +168,7 @@ impl Trigram {
     }
 
     const fn is_roll(&self) -> bool {
+        #[allow(clippy::match_like_matches_macro)]
         match (self.h1, self.h2, self.h3) {
             (Left, Left, Right) => true,
             (Right, Left, Left) => true,
@@ -199,6 +198,7 @@ impl Trigram {
     }
 
     const fn on_one_hand(&self) -> bool {
+        #[allow(clippy::match_like_matches_macro)]
         match (self.h1, self.h2, self.h3) {
             (Left, Left, Left) => true,
             (Right, Right, Right) => true,

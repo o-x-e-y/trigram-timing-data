@@ -8,7 +8,6 @@ use trigram_patterns::TRIGRAM_COMBINATIONS;
 use std::{collections::HashMap, fs::File, io::Read, path::Path};
 
 use serde::{Deserialize, Serialize};
-use serde_json;
 use serde_with::{serde_as, serde_conv};
 
 serde_conv!(
@@ -18,7 +17,7 @@ serde_conv!(
     |value: String| {
         value
             .split(",")
-            .map(|k| str::parse::<Pos>(k))
+            .map(str::parse::<Pos>)
             .collect::<Result<Vec<_>, String>>()?
             .try_into()
             .map_err(|_| "Couldn't turn trigram str into pos trigram".to_string())
@@ -44,7 +43,7 @@ impl TrigramData {
 
     pub fn load_multiple<P: AsRef<Path>>(paths: &[P]) -> Result<Self, String> {
         let datas = paths
-            .into_iter()
+            .iter()
             .map(|p| TrigramData::load(p).map_err(|e| e.to_string()))
             .collect::<Result<Vec<_>, String>>()?;
 
@@ -81,7 +80,7 @@ impl TrigramData {
             .0
             .into_iter()
             .filter(|(poss, _)| {
-                poss.into_iter().all(|p| match p.row {
+                poss.iter().all(|p| match p.row {
                     1 | 2 => p.col > 0 && p.col <= 10,
                     3 => p.col <= 12,
                     // 4 => p.col == 0 || p.col == 1,
@@ -126,7 +125,7 @@ pub struct Avg {
 
 impl Avg {
     pub fn new(data: Vec<u16>) -> Self {
-        if data.len() == 0 {
+        if data.is_empty() {
             return Self {
                 mean: 0,
                 sd: 0,
@@ -286,16 +285,16 @@ fn finger(index: usize) -> usize {
     //     _ => unreachable!()
     // }
     match index % 10 {
-        n @ (0 | 1 | 2 | 3) => n,
+        n @ (0..=3) => n,
         n @ (4 | 5) => n - 1,
-        n @ (6 | 7 | 8 | 9) => n - 2,
+        n @ (6..=9) => n - 2,
         _ => unreachable!(),
     }
 }
 
 fn fingers<const N: usize>(indexes: &[usize; N]) -> [usize; N] {
     indexes
-        .into_iter()
+        .iter()
         .map(|f| finger(*f))
         .collect::<Vec<_>>()
         .try_into()
@@ -315,7 +314,7 @@ impl MatrixData {
         let mut inter = TrigramStatsInter::default();
 
         for (indexes, vals) in self.0.iter() {
-            if indexes_are_sfr(&indexes) {
+            if indexes_are_sfr(indexes) {
                 inter.sfr.extend(vals);
                 inter.overall.extend(vals);
                 continue;
