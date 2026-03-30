@@ -51,11 +51,18 @@ pub struct LayoutInfo {
 
 impl std::fmt::Display for LayoutInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "Layout name: {}", self.name)?;
-        if let Some(fi) = &self.fingermap {
-            write!(f, "Fingermap: {}", fi)?;
+        let mut builder = tabled::builder::Builder::new();
+
+        builder.push_record(["Layout name", &self.name]);
+        if let Some(fingermap) = &self.fingermap {
+            builder.push_record(["Fingermap", &fingermap.to_string()]);
         }
-        Ok(())
+
+        let mut table = builder.build();
+
+        table.with(tabled::settings::Style::modern_rounded());
+
+        write!(f, "{}", table)
     }
 }
 
