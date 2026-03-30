@@ -95,5 +95,6 @@ function get_trigram_data() {
 }
 
 function reset_trigram_data() {
+    trigram_data.clear();
     localStorage.setItem("trigram_data", "{}");
 }
