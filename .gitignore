@@ -1,1 +1,4 @@
 /target
+.direnv
+data/*.json
+!data/dvorak_1k.json
