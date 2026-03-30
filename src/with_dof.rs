@@ -38,7 +38,7 @@ impl Layout {
     pub fn info(&self) -> LayoutInfo {
         LayoutInfo {
             name: self.dof.name().to_owned(),
-            fingering: self.dof.fingering_name().cloned(),
+            fingermap: self.dof.fingering_name().cloned(),
         }
     }
 }
@@ -46,14 +46,14 @@ impl Layout {
 #[derive(Debug)]
 pub struct LayoutInfo {
     name: String,
-    fingering: Option<NamedFingering>,
+    fingermap: Option<NamedFingering>,
 }
 
 impl std::fmt::Display for LayoutInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Layout name: {}", self.name)?;
-        if let Some(fi) = &self.fingering {
-            write!(f, "Fingering: {}", fi)?;
+        if let Some(fi) = &self.fingermap {
+            write!(f, "Fingermap: {}", fi)?;
         }
         Ok(())
     }
