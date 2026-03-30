@@ -1,35 +1,32 @@
-mod mapping;
 mod trigram_patterns;
 mod with_dof;
 
-use mapping::*;
-use trigram_patterns::TRIGRAM_COMBINATIONS;
+use libdof::prelude::{Finger, Key, Pos};
 
 use std::{collections::HashMap, fs::File, io::Read, path::Path};
 
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, serde_conv};
 
+use crate::{trigram_patterns::Trigram, with_dof::Layout};
+
 serde_conv!(
-    TrigramAsPos,
-    [Pos; 3],
-    |trigram: &[Pos; 3]| format!("{},{},{}", trigram[0], trigram[1], trigram[2]),
+    TrigramAsKey,
+    [Key; 3],
+    |trigram: &[Key; 3]| format!("{},{},{}", trigram[0], trigram[1], trigram[2]),
     |value: String| {
         value
             .split(",")
-            .map(str::parse::<Pos>)
+            .map(|s| with_dof::parse_key(s))
             .collect::<Result<Vec<_>, String>>()?
             .try_into()
-            .map_err(|_| "Couldn't turn trigram str into pos trigram".to_string())
+            .map_err(|_| "Couldn't turn trigram str into key trigram".to_string())
     }
 );
 
 #[serde_as]
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct TrigramData(#[serde_as(as = "HashMap<TrigramAsPos, _>")] HashMap<[Pos; 3], Vec<u16>>);
-
-#[derive(Clone, Debug)]
-pub struct MatrixData(HashMap<[usize; 3], Vec<u16>>);
+pub struct TrigramData(#[serde_as(as = "HashMap<TrigramAsKey, _>")] HashMap<[Key; 3], Vec<u16>>);
 
 impl TrigramData {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, String> {
@@ -75,48 +72,51 @@ impl TrigramData {
         res
     }
 
-    pub fn matrix_3x10(self) -> MatrixData {
-        let new_data = self
-            .0
-            .into_iter()
-            .filter(|(poss, _)| {
-                poss.iter().all(|p| match p.row {
-                    1 | 2 => p.col > 0 && p.col <= 10,
-                    3 => p.col <= 12,
-                    // 4 => p.col == 0 || p.col == 1,
-                    _ => false,
-                })
-            })
-            .map(|(poss, v)| {
-                let tri = poss
-                    .into_iter()
-                    .map(|Pos { row, col }| {
-                        let Pos { row, col } = match row {
-                            1 | 2 => Pos {
-                                row: row - 1,
-                                col: col - 1,
-                            },
-                            3 => match col {
-                                0 | 1 => Pos { row: 0, col: 2 },
-                                n @ (2..=11) => Pos { row: n - 2, col: 2 },
-                                12 => Pos { row: 9, col: 2 },
-                                _ => unreachable!(),
-                            },
-                            _ => unreachable!(),
-                        };
-                        row * 10 + col
-                    })
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .unwrap();
-                (tri, v)
-            })
-            .collect::<HashMap<_, _>>();
-        MatrixData(new_data)
+    fn stats(&self, layout: &Layout) -> TrigramStats {
+        let mut inter = TrigramStatsInter::default();
+
+        for (keys, vals) in self.0.iter() {
+            let seq = match layout.finger_seq(keys.clone()) {
+                [Some(s1), Some(s2), Some(s3)] => [s1, s2, s3],
+                _ => continue,
+            };
+
+            if fingers_are_sfs(&seq) {
+                inter.sfs.extend(vals)
+            }
+
+            inter.overall.extend(vals);
+
+            let trigram = Trigram::new(seq);
+            let pattern = trigram.get_trigram_pattern();
+
+            // println!("{}: {}, {:?}\n{}: {}, {:?}\n{}: {}, {:?}\nBecomes: {:?}\n", keys[0], seq[0].0, seq[0].0.hand(), keys[1], seq[1].0, seq[1].0.hand(), keys[2], seq[2].0, seq[2].0.hand(), pattern);
+
+            use trigram_patterns::TrigramPattern as T;
+
+            match pattern {
+                T::Alternate => inter.alternate.extend(vals),
+                T::AlternateSfs => inter.alternate_sfs.extend(vals),
+                T::Inroll => inter.inroll.extend(vals),
+                T::Outroll => inter.outroll.extend(vals),
+                T::Onehand => inter.onehand.extend(vals),
+                T::Redirect => inter.redirect.extend(vals),
+                T::RedirectSfs => inter.redirect_sfs.extend(vals),
+                T::BadRedirect => inter.bad_redirect.extend(vals),
+                T::BadRedirectSfs => inter.bad_redirect_sfs.extend(vals),
+                T::Sfb => inter.sfb.extend(vals),
+                T::BadSfb => inter.bad_sfb.extend(vals),
+                T::Sft => inter.sft.extend(vals),
+                T::Sfr => inter.sfr.extend(vals),
+                T::Other => inter.other.extend(vals),
+            }
+        }
+
+        inter.into()
     }
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct Avg {
     mean: u16,
     sd: u16,
@@ -152,11 +152,15 @@ impl std::fmt::Display for Avg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "mean: {}  sd: {:>2}  n: {:<4}  wpm: {}",
+            "{:<4}     {:<4}    {:<4}     {}",
             self.mean,
             self.sd,
             self.pop,
-            60000 / self.mean * 2 / 5
+            if self.mean == 0 {
+                0
+            } else {
+                60000 / self.mean * 2 / 5
+            }
         )
     }
 }
@@ -229,135 +233,127 @@ pub struct TrigramStats {
 
 impl std::fmt::Display for TrigramStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            concat!(
-                "Overall:        {}\n\n",
-                "Sfb:            {}\n",
-                "BadSfb:         {}\n",
-                "Sft:            {}\n",
-                "Sfr:            {}\n",
-                "Sfs:            {}\n\n",
-                "Alternate:      {}\n",
-                "Alternate Sfs:  {}\n\n",
-                "Inroll:         {}\n",
-                "Outroll:        {}\n",
-                "Onehand:        {}\n\n",
-                "Redirect:       {}\n",
-                "RedirectSfs:    {}\n",
-                "BadRedirect:    {}\n",
-                "BadRedirectSfs: {}\n\n",
-                // "Other:          {}\n",
-                // "Invalid:        {}\n",
-            ),
-            self.overall,
-            self.sfb,
-            self.bad_sfb,
-            self.sft,
-            self.sfr,
-            self.sfs,
-            self.alternate,
-            self.alternate_sfs,
-            self.inroll,
-            self.outroll,
-            self.onehand,
-            self.redirect,
-            self.redirect_sfs,
-            self.bad_redirect,
-            self.bad_redirect_sfs,
-            // self.other,
-            // self.invalid,
-        )
+        let create_row = |avg: Avg| {
+            let mean = avg.mean.to_string();
+            let sd = avg.sd.to_string();
+            let pop = avg.pop.to_string();
+            let wpm = if avg.mean == 0 {
+                0.to_string()
+            } else {
+                (60000 / avg.mean * 2 / 5).to_string()
+            };
+
+            [mean, sd, pop, wpm]
+        };
+
+        let horizontal = |idx: usize| {
+            (
+                idx,
+                tabled::settings::style::HorizontalLine::inherit(tabled::settings::Style::modern()),
+            )
+        };
+
+        let mut builder = tabled::builder::Builder::new();
+
+        builder.push_record(["mean", "sd", "n", "wpm"]);
+
+        builder.push_record(create_row(self.overall));
+        builder.push_record(create_row(self.sfb));
+        builder.push_record(create_row(self.bad_sfb));
+        builder.push_record(create_row(self.sft));
+        builder.push_record(create_row(self.sfr));
+        builder.push_record(create_row(self.sfs));
+        builder.push_record(create_row(self.alternate));
+        builder.push_record(create_row(self.alternate_sfs));
+        builder.push_record(create_row(self.inroll));
+        builder.push_record(create_row(self.outroll));
+        builder.push_record(create_row(self.onehand));
+        builder.push_record(create_row(self.redirect));
+        builder.push_record(create_row(self.redirect_sfs));
+        builder.push_record(create_row(self.bad_redirect));
+        builder.push_record(create_row(self.bad_redirect_sfs));
+
+        builder.insert_column(
+            0,
+            [
+                "",
+                "Overall",
+                "Sfb",
+                "BadSfb",
+                "Sft",
+                "Sfr",
+                "Sfs",
+                "Alternate",
+                "Alternate Sfs",
+                "Inroll",
+                "Outroll",
+                "Onehand",
+                "Redirect",
+                "RedirectSfs",
+                "BadRedirect",
+                "BadRedirectSfs",
+            ],
+        );
+
+        let mut table = builder.build();
+
+        table.with(
+            tabled::settings::Style::modern_rounded()
+                .remove_horizontal()
+                .horizontals([
+                    horizontal(1),
+                    horizontal(2),
+                    horizontal(7),
+                    horizontal(9),
+                    horizontal(12),
+                ]),
+        );
+        table.with(tabled::settings::Padding::new(1, 3, 0, 0));
+
+        write!(f, "{}", table)
     }
 }
 
-fn finger(index: usize) -> usize {
-    // match (index / 10, index % 10) {
-    //     (3, 0) => Finger::LT,
-    //     (_, 0) => Finger::LP,
-    //     (_, 1) => Finger::LR,
-    //     (_, 2) => Finger::LM,
-    //     (_, 3) | (_, 4) => Finger::LI,
-    //     (_, 5) | (_, 6)=> Finger::RI,
-    //     (_, 7) => Finger::RM,
-    //     (_, 8) => Finger::RR,
-    //     (_, 9) => Finger::RP,
-    //     _ => unreachable!()
-    // }
-    match index % 10 {
-        n @ (0..=3) => n,
-        n @ (4 | 5) => n - 1,
-        n @ (6..=9) => n - 2,
-        _ => unreachable!(),
-    }
-}
-
-fn fingers<const N: usize>(indexes: &[usize; N]) -> [usize; N] {
-    indexes
-        .iter()
-        .map(|f| finger(*f))
-        .collect::<Vec<_>>()
-        .try_into()
-        .unwrap()
-}
-
-fn fingers_are_sfs([a, b, c]: &[usize; 3]) -> bool {
+fn fingers_are_sfs([(a, _), (b, _), (c, _)]: &[(Finger, Pos); 3]) -> bool {
     a == c && a != b
 }
 
-fn indexes_are_sfr([a, b, c]: &[usize; 3]) -> bool {
-    a == b || b == c
-}
-
-impl MatrixData {
-    fn stats(&self) -> TrigramStats {
-        let mut inter = TrigramStatsInter::default();
-
-        for (indexes, vals) in self.0.iter() {
-            if indexes_are_sfr(indexes) {
-                inter.sfr.extend(vals);
-                inter.overall.extend(vals);
-                continue;
-            }
-
-            let [a, b, c] = fingers(indexes);
-
-            if fingers_are_sfs(&[a, b, c]) {
-                inter.sfs.extend(vals)
-            }
-
-            inter.overall.extend(vals);
-
-            let combination = (a << 6) | (b << 3) | c;
-            let pattern = TRIGRAM_COMBINATIONS[combination];
-
-            use trigram_patterns::TrigramPattern as T;
-
-            match pattern {
-                T::Alternate => inter.alternate.extend(vals),
-                T::AlternateSfs => inter.alternate_sfs.extend(vals),
-                T::Inroll => inter.inroll.extend(vals),
-                T::Outroll => inter.outroll.extend(vals),
-                T::Onehand => inter.onehand.extend(vals),
-                T::Redirect => inter.redirect.extend(vals),
-                T::RedirectSfs => inter.redirect_sfs.extend(vals),
-                T::BadRedirect => inter.bad_redirect.extend(vals),
-                T::BadRedirectSfs => inter.bad_redirect_sfs.extend(vals),
-                T::Sfb => inter.sfb.extend(vals),
-                T::BadSfb => inter.bad_sfb.extend(vals),
-                T::Sft => inter.sft.extend(vals),
-                T::Other => inter.other.extend(vals),
-            }
-        }
-
-        inter.into()
-    }
-}
+// fn indexes_are_sfr([a, b, c]: &[usize; 3]) -> bool {
+//     a == b || b == c
+// }
 
 fn main() {
-    let paths = std::env::args().skip(1).collect::<Vec<_>>();
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
 
-    let data = TrigramData::load_multiple(&paths).unwrap().matrix_3x10();
+    if args.is_empty() {
+        println!("Usage: trigram-timing-data <--layout path to layout> <--data path to data> [path to data]...");
+        return;
+    }
 
-    println!("{}", data.stats());
+    let maybe_layout = args
+        .iter()
+        .skip_while(|&arg| arg != "--layout" && arg != "-l")
+        .nth(1);
+
+    let layout = match maybe_layout {
+        Some(path) => {
+            Layout::load(path).unwrap_or_else(|e| panic!("Failed to load layout at {path}: {e}"))
+        }
+        None => {
+            println!("A layout path must be specified like --layout <path>");
+            return;
+        }
+    };
+
+    let data_paths = args
+        .iter()
+        .skip_while(|&arg| arg != "--data" && arg != "-d")
+        .skip(1)
+        .take_while(|&arg| arg != "--layout" && arg != "-l")
+        .collect::<Vec<_>>();
+
+    let data = TrigramData::load_multiple(&data_paths).unwrap();
+
+    println!("{}", layout.info());
+    println!("{}", data.stats(&layout));
 }
