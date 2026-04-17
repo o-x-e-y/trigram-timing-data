@@ -8,7 +8,10 @@ use std::{collections::HashMap, fs::File, io::Read, path::Path};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, serde_conv};
 
-use crate::{trigram_patterns::Trigram, with_dof::Layout};
+use crate::{
+    trigram_patterns::{Trigram, TrigramPattern},
+    with_dof::Layout,
+};
 
 serde_conv!(
     TrigramAsKey,
@@ -89,6 +92,15 @@ impl TrigramData {
 
             let trigram = Trigram::new(seq);
             let pattern = trigram.get_trigram_pattern();
+
+            if matches!(
+                pattern,
+                TrigramPattern::Sfb | TrigramPattern::Sfr | TrigramPattern::Sft
+            ) {
+                for (finger, _) in &seq {
+                    inter.by_finger.entry(*finger).or_default().extend(vals);
+                }
+            }
 
             // println!("{}: {}, {:?}\n{}: {}, {:?}\n{}: {}, {:?}\nBecomes: {:?}\n", keys[0], seq[0].0, seq[0].0.hand(), keys[1], seq[1].0, seq[1].0.hand(), keys[2], seq[2].0, seq[2].0.hand(), pattern);
 
@@ -184,6 +196,7 @@ pub struct TrigramStatsInter {
     bad_redirect_sfs: Vec<u16>,
     other: Vec<u16>,
     invalid: Vec<u16>,
+    by_finger: HashMap<Finger, Vec<u16>>,
 }
 
 impl From<TrigramStatsInter> for TrigramStats {
@@ -206,6 +219,11 @@ impl From<TrigramStatsInter> for TrigramStats {
             sft: Avg::new(stats.sft),
             _other: Avg::new(stats.other),
             _invalid: Avg::new(stats.invalid),
+            by_finger: stats
+                .by_finger
+                .into_iter()
+                .map(|(k, v)| (k, Avg::new(v)))
+                .collect(),
         }
     }
 }
@@ -229,6 +247,7 @@ pub struct TrigramStats {
     bad_redirect_sfs: Avg,
     _other: Avg,
     _invalid: Avg,
+    by_finger: HashMap<Finger, Avg>,
 }
 
 impl std::fmt::Display for TrigramStats {
@@ -308,9 +327,32 @@ impl std::fmt::Display for TrigramStats {
                     horizontal(12),
                 ]),
         );
-        table.with(tabled::settings::Padding::new(1, 3, 0, 0));
+        table.with(tabled::settings::Padding::new(1, 2, 0, 0));
 
-        write!(f, "{}", table)
+        write!(f, "{}", table)?;
+        writeln!(f)?;
+
+        let mut fbuilder = tabled::builder::Builder::new();
+        fbuilder.push_record(["mean", "sd", "n", "wpm"]);
+
+        for finger in Finger::FINGERS {
+            let avg = self.by_finger.get(&finger).copied().unwrap_or_default();
+            fbuilder.push_record(create_row(avg));
+        }
+
+        fbuilder.insert_column(
+            0,
+            ["".to_string()]
+                .into_iter()
+                .chain(Finger::FINGERS.map(|f| f.to_string()))
+                .collect::<Vec<_>>(),
+        );
+
+        let mut ftable = fbuilder.build();
+        ftable.with(tabled::settings::Style::modern_rounded());
+        ftable.with(tabled::settings::Padding::new(1, 2, 0, 0));
+
+        write!(f, "{}", ftable)
     }
 }
 
